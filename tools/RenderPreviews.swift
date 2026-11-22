@@ -115,6 +115,7 @@ enum RenderPreviews {
         try verifyCachedNavigation(fixture: fixture)
         try verifyObsoleteFolderScan(fixture: fixture)
         try verifyGallery(fixture: fixture, output: output)
+        try verifyGalleryFolders(fixture: fixture)
         try verifyPreviewRetention()
         try verifyRefreshAnimation(fixture: fixture)
         try verifyRefreshAndRatings(output: output)
@@ -463,6 +464,78 @@ enum RenderPreviews {
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)
         else { throw PreviewError.displayToggleFailed }
         canvas.mouseDown(with: event)
+    }
+
+    /// Ensures both layouts open nested folders and images, restore the child on going up, and honor cancellation.
+    private static func verifyGalleryFolders(fixture: URL) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let album = root.appendingPathComponent("Album", isDirectory: true)
+        let empty = album.appendingPathComponent("Empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: fixture, to: album.appendingPathComponent("photo.png"))
+        let viewer = ViewerController(automaticallyRefresh: false)
+        guard let window = viewer.window, let content = window.contentView,
+            let gallery = descendants(content).compactMap({ $0 as? GalleryView }).first,
+            let collection = descendants(gallery).compactMap({ $0 as? NSCollectionView }).first
+        else { throw PreviewError.missingWindow }
+        defer { window.close() }
+        func waitUntil(line: Int = #line, _ ready: () -> Bool) throws {
+            let deadline = Date().addingTimeInterval(10)
+            while !ready() && Date() < deadline { settle() }
+            guard ready() else { throw PreviewError.galleryFailed(line: line) }
+        }
+        func selectedName() -> String? {
+            guard let index = collection.selectionIndexPaths.first else { return nil }
+            return collection.item(at: index)?.textField?.stringValue
+        }
+        func pressReturn() throws {
+            guard
+                let event = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)
+            else { throw PreviewError.galleryFailed(line: #line) }
+            collection.keyDown(with: event)
+        }
+        viewer.open(root)
+        try waitUntil { toolbarControl(window, "OpenParentFolder") != nil }
+        guard let up = toolbarControl(window, "OpenParentFolder") as? NSButton else { throw PreviewError.missingWindow }
+        for layout in [GalleryLayout.rows, .preview] {
+            if layout == .rows { viewer.showRows() } else { viewer.showPreview() }
+            try waitUntil { viewer.isGalleryVisible && selectedName() == "Album" }
+            try pressReturn()
+            try waitUntil { window.title == "Album" && selectedName() == "photo.png" }
+            viewer.previousImage()
+            try waitUntil { selectedName() == "Empty" }
+            if layout == .preview {
+                guard
+                    let open = descendants(gallery).compactMap({ $0 as? NSButton }).first(where: {
+                        $0.title == "Open Folder"
+                    })
+                else { throw PreviewError.galleryFailed(line: #line) }
+                open.performClick(nil)
+            } else {
+                try pressReturn()
+            }
+            try waitUntil { window.title == "Empty" && collection.numberOfItems(inSection: 0) == 0 }
+            guard viewer.canRefresh, !viewer.canTrashCurrentImage, !up.isHidden else {
+                throw PreviewError.galleryFailed(line: #line)
+            }
+            up.performClick(nil)
+            try waitUntil { window.title == "Album" && selectedName() == "Empty" }
+            viewer.nextImage()
+            try pressReturn()
+            try waitUntil { !viewer.isGalleryVisible && window.title == "photo.png" && viewer.canTrashCurrentImage }
+            viewer.toggleGallery()
+            up.performClick(nil)
+            try waitUntil { window.title == root.lastPathComponent && selectedName() == "Album" }
+        }
+        up.performClick(nil)
+        try waitUntil { window.attachedSheet is NSOpenPanel }
+        (window.attachedSheet as? NSOpenPanel)?.cancel(nil)
+        try waitUntil {
+            window.attachedSheet == nil && window.title == root.lastPathComponent && selectedName() == "Album"
+        }
     }
 
     /// Ensures Gallery defaults to Preview and its grid preserves ratings, selection, filters, and Trash restrictions.
@@ -1322,7 +1395,7 @@ enum RenderPreviews {
         let gate = ScanCheckpointGate()
         let viewer = ViewerController { folder, isCancelled in
             defer { gate.finish() }
-            return try ImageLoader.discover(
+            return try ImageLoader.discoverContents(
                 in: folder,
                 isCancelled: {
                     gate.checkpoint()
@@ -1383,8 +1456,8 @@ enum RenderPreviews {
         try FileManager.default.copyItem(at: fixture, to: imageURL)
         let gate = ScanCheckpointGate()
         let viewer = ViewerController(
-            discoverImages: { folder, isCancelled in
-                try ImageLoader.discover(
+            discoverContents: { folder, isCancelled in
+                try ImageLoader.discoverContents(
                     in: folder,
                     isCancelled: {
                         gate.checkpoint()

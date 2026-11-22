@@ -179,6 +179,25 @@ func embeddedRatingAndSidecarExclusion() throws {
     }
 }
 
+/// Ensures gallery discovery lists immediate folders in natural order and never follows links or opens packages.
+@Test
+func galleryDiscoversImmediateFolders() throws {
+    try withFolder { root in
+        for name in ["Album 10", "Album 2", ".hidden", "Example.app", "nested.png"] {
+            let folder = root.appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            try Data().write(to: folder.appendingPathComponent("inside.jpg"))
+        }
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("alias"), withDestinationURL: root.appendingPathComponent("Album 2"))
+        let image = root.appendingPathComponent("photo.jpg")
+        try Data().write(to: image)
+        let contents = try ImageLoader.discoverContents(in: root)
+        #expect(contents.folders.map(\.lastPathComponent) == ["Album 2", "Album 10", "nested.png"])
+        #expect(contents.images.map(\.url) == [image])
+    }
+}
+
 /// Ensures folder discovery skips RAW, subdirectories, and symbolic links but retains corrupt supported images.
 @Test
 func folderDiscoveryAndRecoverableErrors() throws {
