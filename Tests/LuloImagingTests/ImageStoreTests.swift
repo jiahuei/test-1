@@ -1,0 +1,195 @@
+import Foundation
+import ImageIO
+import Testing
+
+@testable import LuloImaging
+
+private func cacheTestFolder() throws -> URL {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    return folder
+}
+
+/// Ensures revisits reuse decoded pixels, recently used images survive eviction, and retained bytes stay bounded.
+@Test
+func imageStoreReuseAndBudget() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let urls = ["a.png", "b.png", "c.png", "d.png"].map { folder.appendingPathComponent($0) }
+    for url in urls { try fixture(at: url) }
+    let decoded = try ImageLoader.decode(at: urls[0])
+    let cost = decoded.bytesPerRow * decoded.height
+    let store = ImageStore(byteLimit: cost * 2)
+    let a = try await store.load(at: urls[0], generation: 1)
+    let b = try await store.load(at: urls[1], generation: 1)
+    let again = try await store.load(at: urls[0], generation: 1)
+    #expect(a.image === again.image)
+    _ = try await store.load(at: urls[2], generation: 1)
+    #expect(await store.cachedBytes <= cost * 2)
+    let retained = try await store.load(at: urls[0], generation: 1)
+    #expect(retained.image === a.image)
+    let evicted = try await store.load(at: urls[1], generation: 1)
+    #expect(evicted.image !== b.image)
+    #expect(await store.cachedBytes <= cost * 2)
+    let uncached = ImageStore(byteLimit: cost - 1)
+    let first = try await uncached.load(at: urls[0], generation: 1)
+    let second = try await uncached.load(at: urls[0], generation: 1)
+    #expect(first.image !== second.image)
+    #expect(await uncached.cachedBytes == 0)
+}
+
+/// Ensures the production full-resolution cache defaults to 3 GiB and evicts the least recent of 500 images.
+@Test
+func imageStoreCountLimit() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let urls = (0..<501).map { folder.appendingPathComponent("image\($0).png") }
+    for url in urls { try fixture(at: url) }
+    let store = ImageStore()
+    #expect(await store.byteLimit == 3 * 1024 * 1024 * 1024)
+    #expect(await store.countLimit == 500)
+    let first = try await store.load(at: urls[0], generation: 1)
+    let second = try await store.load(at: urls[1], generation: 1)
+    for url in urls[2..<500] { _ = try await store.load(at: url, generation: 1) }
+    let cost = first.image.bytesPerRow * first.image.height
+    #expect(await store.cachedBytes == cost * 500)
+    let reused = try await store.load(at: urls[0], generation: 1)
+    #expect(reused.image === first.image)
+    _ = try await store.load(at: urls[500], generation: 1)
+    #expect(await store.cachedBytes == cost * 500)
+    let retained = try await store.load(at: urls[0], generation: 1)
+    #expect(retained.image === first.image)
+    let evicted = try await store.load(at: urls[1], generation: 1)
+    #expect(evicted.image !== second.image)
+    #expect(await store.cachedBytes == cost * 500)
+}
+
+/// Ensures changed/deleted source files and explicit new sessions never return stale cached pixels or metadata.
+@Test
+func imageStoreInvalidationAndRecovery() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("image.png")
+    try fixture(at: url, rating: 1)
+    let store = ImageStore()
+    let original = try await store.load(at: url, generation: 1)
+    let reopened = try await store.load(at: url, generation: 2)
+    #expect(original.image !== reopened.image)
+    try fixture(at: url, rating: 5)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: url.path)
+    let modified = try await store.load(at: url, generation: 2)
+    #expect(modified.image !== reopened.image)
+    #expect(modified.details.entry.rating == 5)
+    try FileManager.default.removeItem(at: url)
+    await #expect(throws: ImageLoadError.self) { try await store.load(at: url, generation: 2) }
+    try Data().write(to: url)
+    await #expect(throws: ImageLoadError.self) { try await store.load(at: url, generation: 2) }
+    try fixture(at: url, rating: 3)
+    let recovered = try await store.load(at: url, generation: 2)
+    #expect(recovered.details.entry.rating == 3)
+}
+
+/// Ensures loading feedback is requested for misses and invalidation, but never for cached images.
+@Test
+func imageStoreCacheMissNotifications() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let first = folder.appendingPathComponent("a.png")
+    let second = folder.appendingPathComponent("b.png")
+    for url in [first, second] { try fixture(at: url) }
+    let image = try ImageLoader.decode(at: first)
+    let store = ImageStore(byteLimit: image.bytesPerRow * image.height)
+    let events = AsyncStream<URL>.makeStream()
+    func load(_ url: URL, generation: Int = 1) async throws {
+        _ = try await store.load(at: url, generation: generation) {
+            events.continuation.yield(url)
+        }
+    }
+    try await load(first)
+    try await load(first)
+    try await load(second)
+    try await load(first)
+    try fixture(at: first, rating: 5)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: first.path)
+    try await load(first)
+    try await load(first, generation: 2)
+    try FileManager.default.removeItem(at: first)
+    await #expect(throws: ImageLoadError.self) { try await load(first, generation: 2) }
+    try Data().write(to: first)
+    await #expect(throws: ImageLoadError.self) { try await load(first, generation: 2) }
+    events.continuation.finish()
+    var misses: [URL] = []
+    for await url in events.stream { misses.append(url) }
+    #expect(misses == [first, second, first, first, first, first])
+}
+
+/// Ensures cancelled queued work neither decodes a file nor clears a newer session's cache.
+@Test
+func cancelledImageLoadPreservesCurrentCache() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("current.png")
+    try fixture(at: url)
+    let store = ImageStore()
+    let current = try await store.load(at: url, generation: 2)
+    let gate = AsyncStream<Void>.makeStream()
+    let task = Task {
+        for await _ in gate.stream { break }
+        return try await store.load(at: folder.appendingPathComponent("missing.png"), generation: 1) {
+            Issue.record("Cancelled queued requests must not request loading feedback.")
+        }
+    }
+    task.cancel()
+    gate.continuation.finish()
+    await #expect(throws: CancellationError.self) { try await task.value }
+    let retained = try await store.load(at: url, generation: 2)
+    #expect(retained.image === current.image)
+}
+
+/// Ensures selecting an in-flight prefetch reuses its finished decode even when the prefetch task is cancelled.
+@Test
+func completedCancelledDecodeIsReusable() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("prefetched.png")
+    try fixture(at: url)
+    let loaded = try LoadedImage(image: ImageLoader.decode(at: url), details: ImageLoader.details(at: url))
+    let store = ImageStore(byteLimit: 1024 * 1024) { _ in
+        withUnsafeCurrentTask { $0?.cancel() }
+        return loaded
+    }
+    let prefetch = Task { try await store.load(at: url, generation: 1) }
+    await #expect(throws: CancellationError.self) { try await prefetch.value }
+    // A second decode would cancel this task too. A cache hit must return the same immutable pixels.
+    let selected = try await store.load(at: url, generation: 1) {
+        Issue.record("Reusing a completed prefetch must not request loading feedback.")
+    }
+    #expect(selected.image === loaded.image)
+}
+
+/// Ensures replacement at the same path invalidates cached pixels even if size and modification time match.
+@Test
+func imageStoreDetectsFileReplacement() async throws {
+    let folder = try cacheTestFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("image.png")
+    let replacement = folder.appendingPathComponent("replacement.png")
+    try fixture(at: url)
+    // A whole-second timestamp avoids filesystem precision loss when setting the copied file's date.
+    let modified = Date(timeIntervalSince1970: 100)
+    try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+    let store = ImageStore()
+    let original = try await store.load(at: url, generation: 1)
+    let originalStamp = try FileStamp(url: url)
+    try FileManager.default.copyItem(at: url, to: replacement)
+    try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: replacement.path)
+    try FileManager.default.removeItem(at: url)
+    try FileManager.default.moveItem(at: replacement, to: url)
+    let replacedStamp = try FileStamp(url: url)
+    #expect(replacedStamp.modified == originalStamp.modified)
+    #expect(replacedStamp.size == originalStamp.size)
+    #expect(replacedStamp.fileNumber != originalStamp.fileNumber)
+    let replaced = try await store.load(at: url, generation: 1)
+    #expect(replaced.image !== original.image)
+}
