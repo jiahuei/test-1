@@ -512,10 +512,16 @@ enum RenderPreviews {
             viewer.previousImage()
             try waitUntil { selectedName() == "Empty" }
             if layout == .preview {
+                gallery.layoutSubtreeIfNeeded()
                 guard
                     let open = descendants(gallery).compactMap({ $0 as? NSButton }).first(where: {
                         $0.title == "Open Folder"
-                    })
+                    }),
+                    let poster = descendants(gallery).compactMap({ $0 as? NSImageView })
+                        .first(where: { !($0 is GalleryThumbnailView) }), let container = poster.superview,
+                    // The folder poster stays at icon size and is centered in the column.
+                    poster.image != nil, poster.frame.width <= 128, poster.frame.height <= 128,
+                    abs(poster.frame.midX - container.bounds.midX) < 1
                 else { throw PreviewError.galleryFailed(line: #line) }
                 open.performClick(nil)
             } else {

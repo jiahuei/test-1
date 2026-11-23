@@ -28,6 +28,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
     private let count = NSTextField(labelWithString: "")
     private let poster = NSView()
     private let posterImage = NSImageView()
+    private let posterFolderIcon = NSImage(named: NSImage.folderName)
     private let caption = NSTextField(labelWithString: "")
     private let exposure = NSTextField(wrappingLabelWithString: "")
     private let posterRating = RatingChip()
@@ -164,10 +165,13 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
             let imageBottom = caption.frame.maxY + 16
             let availableHeight = max(1, poster.bounds.height - imageBottom)
             let sourceSize = posterImage.image?.size ?? NSSize(width: 3, height: 2)
-            let imageHeight = min(availableHeight, poster.bounds.width * sourceSize.height / max(1, sourceSize.width))
+            // A folder icon is centered at icon size instead of filling the column like a photo.
+            let showsFolder = posterImage.image != nil && posterImage.image === posterFolderIcon
+            let imageWidth = showsFolder ? min(128, poster.bounds.width) : poster.bounds.width
+            let imageHeight = min(availableHeight, imageWidth * sourceSize.height / max(1, sourceSize.width))
             posterImage.frame = NSRect(
-                x: 0, y: imageBottom + (availableHeight - imageHeight) / 2,
-                width: poster.bounds.width, height: imageHeight)
+                x: (poster.bounds.width - imageWidth) / 2, y: imageBottom + (availableHeight - imageHeight) / 2,
+                width: imageWidth, height: imageHeight)
             scroll.frame = NSRect(
                 x: posterWidth + 8, y: 0, width: max(1, bounds.width - posterWidth - 30),
                 height: max(1, bounds.height - 10))
@@ -250,7 +254,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         if self.selectedURL != selectedURL || refreshed {
             self.selectedURL = selectedURL
             fullPreview = false
-            posterImage.image = isFolder ? NSImage(named: NSImage.folderName) : nil
+            posterImage.image = isFolder ? posterFolderIcon : nil
             posterImage.setAccessibilityLabel(selectedURL?.lastPathComponent)
             viewButton.title = isFolder ? "Open Folder" : "View"
             viewButton.setAccessibilityLabel(isFolder ? "Open folder" : "View image")
