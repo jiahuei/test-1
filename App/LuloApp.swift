@@ -59,6 +59,9 @@ final class LuloApp: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         view.submenu = NSMenu(title: "View")
         view.submenu?.addItem(withTitle: "Refresh", action: #selector(refreshImages), keyEquivalent: "r")
         view.submenu?.addItem(withTitle: "Toggle Gallery", action: #selector(toggleGallery), keyEquivalent: "g")
+        view.submenu?.addItem(
+            withTitle: "Enclosing Folder", action: #selector(openParentFolder),
+            keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
         view.submenu?.addItem(withTitle: "Previous Image", action: #selector(previousImage), keyEquivalent: "[")
         view.submenu?.addItem(withTitle: "Next Image", action: #selector(nextImage), keyEquivalent: "]")
         view.submenu?.addItem(withTitle: "Toggle Metadata", action: #selector(toggleMetadata), keyEquivalent: "i")
@@ -78,12 +81,15 @@ final class LuloApp: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.mainMenu = menu
     }
 
+    @objc private func openParentFolder() { viewer?.openParentFolder() }
+
     @objc private func openImage() {
         showViewer()
         viewer?.openPanel()
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(openParentFolder) { return viewer?.canOpenParent == true }
         if menuItem.action == #selector(trashImage) { return viewer?.canTrashCurrentImage == true }
         if menuItem.action == #selector(refreshImages) { return viewer?.canRefresh == true }
         if menuItem.action == #selector(showRows) || menuItem.action == #selector(showPreview) {

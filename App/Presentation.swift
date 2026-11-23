@@ -56,6 +56,7 @@ final class BreadcrumbView: NSView {
     let rating = RatingChip()
     private let symbol = NSImageView()
     private let parent = NSTextField(labelWithString: "")
+    private let up = NSButton()
     private let parentSlash = NSTextField(labelWithString: "/")
     private let folder = NSButton()
     private let folderLabel = NSTextField(labelWithString: "")
@@ -63,6 +64,7 @@ final class BreadcrumbView: NSView {
     private let filename = NSTextField(labelWithString: "")
     private let row = NSStackView()
     private var folderWidth: NSLayoutConstraint?
+    var goUp: (() -> Void)?
     var showGallery: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -84,6 +86,15 @@ final class BreadcrumbView: NSView {
         filename.font = .systemFont(ofSize: 13, weight: .semibold)
         filename.lineBreakMode = .byTruncatingMiddle
         filename.textColor = Theme.textPrimary
+        up.identifier = .init("OpenParentFolder")
+        up.isBordered = false
+        up.image = Theme.symbol("arrow.up", size: 12)
+        up.font = .systemFont(ofSize: 13)
+        up.lineBreakMode = .byTruncatingTail
+        up.target = self
+        up.action = #selector(openParent)
+        up.toolTip = "Open parent folder (⌘↑)"
+        up.widthAnchor.constraint(lessThanOrEqualToConstant: 110).isActive = true
         parent.font = .systemFont(ofSize: 13)
         parent.lineBreakMode = .byTruncatingTail
         parent.textColor = Theme.textSecondary
@@ -92,7 +103,7 @@ final class BreadcrumbView: NSView {
         rating.identifier = .init("BreadcrumbRating")
         rating.setContentCompressionResistancePriority(.required, for: .horizontal)
         rating.isHidden = true
-        for child in [symbol, parent, parentSlash, folder, folderLabel, fileSlash, filename, rating] {
+        for child in [symbol, parent, up, parentSlash, folder, folderLabel, fileSlash, filename, rating] {
             row.addArrangedSubview(child)
         }
         row.spacing = 7
@@ -118,10 +129,16 @@ final class BreadcrumbView: NSView {
         let hasFolder = authorizedFolder != nil
         let narrow = windowWidth < 1000
         folderWidth?.isActive = hasFolder && !gallery && file != nil
-        symbol.isHidden = !hasFolder
-        parent.isHidden = !hasFolder || narrow
-        parentSlash.isHidden = parent.isHidden
-        parent.stringValue = authorizedFolder?.deletingLastPathComponent().lastPathComponent ?? ""
+        symbol.isHidden = !hasFolder || gallery
+        let parentURL = authorizedFolder.flatMap(FolderNavigation.parent(of:))
+        let parentName = parentURL?.lastPathComponent ?? ""
+        up.isHidden = !gallery || parentURL == nil
+        up.title = narrow ? "" : parentName
+        up.imagePosition = narrow ? .imageOnly : .imageLeading
+        up.setAccessibilityLabel("Open parent folder, \(parentName)")
+        parent.isHidden = !hasFolder || narrow || gallery
+        parentSlash.isHidden = parent.isHidden && up.isHidden
+        parent.stringValue = parentName
         folder.isHidden = !hasFolder || gallery
         folderLabel.isHidden = !hasFolder || !gallery
         folder.title = authorizedFolder?.lastPathComponent ?? ""
@@ -134,6 +151,7 @@ final class BreadcrumbView: NSView {
         toolTip = (gallery ? authorizedFolder : file)?.path
         setAccessibilityValue(toolTip)
     }
+    @objc private func openParent() { goUp?() }
     @objc private func openGallery() { showGallery?() }
 }
 

@@ -2,6 +2,23 @@ import AppKit
 import LuloCore
 import LuloImaging
 
+private enum GalleryEntry: Equatable {
+    case folder(URL)
+    case image(ImageEntry)
+
+    var url: URL {
+        switch self {
+        case .folder(let url): url
+        case .image(let image): image.url
+        }
+    }
+
+    var image: ImageEntry? {
+        if case .image(let image) = self { return image }
+        return nil
+    }
+}
+
 @MainActor
 final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDelegate {
     private let collection = GalleryCollectionView()
@@ -11,13 +28,14 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
     private let count = NSTextField(labelWithString: "")
     private let poster = NSView()
     private let posterImage = NSImageView()
+    private let posterFolderIcon = NSImage(named: NSImage.folderName)
     private let caption = NSTextField(labelWithString: "")
     private let exposure = NSTextField(wrappingLabelWithString: "")
     private let posterRating = RatingChip()
     private let viewButton = ProminentButton(title: "View", target: nil, action: nil)
     private let collectionLayout = GalleryCollectionLayout()
     private let loader: ThumbnailLoader
-    private var entries: [ImageEntry] = []
+    private var entries: [GalleryEntry] = []
     private var folderAccess: FileAccess?
     private var fileAccess: FileAccess?
     private var generation = 0
@@ -147,10 +165,13 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
             let imageBottom = caption.frame.maxY + 16
             let availableHeight = max(1, poster.bounds.height - imageBottom)
             let sourceSize = posterImage.image?.size ?? NSSize(width: 3, height: 2)
-            let imageHeight = min(availableHeight, poster.bounds.width * sourceSize.height / max(1, sourceSize.width))
+            // A folder icon is centered at icon size instead of filling the column like a photo.
+            let showsFolder = posterImage.image != nil && posterImage.image === posterFolderIcon
+            let imageWidth = showsFolder ? min(128, poster.bounds.width) : poster.bounds.width
+            let imageHeight = min(availableHeight, imageWidth * sourceSize.height / max(1, sourceSize.width))
             posterImage.frame = NSRect(
-                x: 0, y: imageBottom + (availableHeight - imageHeight) / 2,
-                width: poster.bounds.width, height: imageHeight)
+                x: (poster.bounds.width - imageWidth) / 2, y: imageBottom + (availableHeight - imageHeight) / 2,
+                width: imageWidth, height: imageHeight)
             scroll.frame = NSRect(
                 x: posterWidth + 8, y: 0, width: max(1, bounds.width - posterWidth - 30),
                 height: max(1, bounds.height - 10))
@@ -164,9 +185,11 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
     }
 
     func update(
-        entries: [ImageEntry], selectedURL: URL?, folderAccess: FileAccess, fileAccess: FileAccess?, generation: Int,
+        images: [ImageEntry], folders: [URL], selectedURL: URL?, folderAccess: FileAccess, fileAccess: FileAccess?,
+        generation: Int,
         preferences: Preferences, totalCount: Int, filterSummary: String
     ) {
+        let entries = folders.map(GalleryEntry.folder) + images.map(GalleryEntry.image)
         self.folderAccess = folderAccess
         self.fileAccess = fileAccess
         let mode = preferences.galleryLayout
@@ -179,7 +202,8 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         collectionLayout.presentation = mode
         collectionLayout.targetSize = size
         collectionLayout.aspectRatios = entries.map { entry in
-            guard let size = entry.pixelSize, size.height > 0 else { return 1.5 }
+            guard case .image(let image) = entry else { return 1 }
+            guard let size = image.pixelSize, size.height > 0 else { return 1.5 }
             return Double(size.width / size.height)
         }
         if changed || layoutChanged {
@@ -197,11 +221,14 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         heading.stringValue = folderAccess.url.lastPathComponent
         heading.maximumNumberOfLines = mode == .rows ? 1 : 3
         heading.lineBreakMode = mode == .rows ? .byTruncatingTail : .byWordWrapping
-        let number = entries.count == totalCount ? "\(totalCount) images" : "\(entries.count) of \(totalCount) images"
+        let imageCount = images.count == totalCount ? "\(totalCount) images" : "\(images.count) of \(totalCount) images"
+        let number =
+            folders.isEmpty
+            ? imageCount : "\(folders.count) \(folders.count == 1 ? "folder" : "folders"), " + imageCount
         count.stringValue =
             mode == .rows
             ? number
-            : number + (entries.count == totalCount ? "" : " shown") + ", sorted by "
+            : number + (images.count == totalCount ? "" : " shown") + ", sorted by "
                 + preferences.sort.rawValue.lowercased()
         count.textColor = preferences.blurredBackground ? Theme.textPrimary : Theme.textSecondary
         exposure.textColor = count.textColor
@@ -222,16 +249,20 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         heading.isHidden = entries.isEmpty
         count.isHidden = entries.isEmpty
         // Reordering/filtering does not invalidate the selected image; refresh still does.
+        let selection = entries.firstIndex(where: { $0.url == selectedURL })
+        let isFolder = selection.map { entries[$0].image == nil } ?? false
         if self.selectedURL != selectedURL || refreshed {
             self.selectedURL = selectedURL
             fullPreview = false
-            posterImage.image = nil
+            posterImage.image = isFolder ? posterFolderIcon : nil
+            posterImage.setAccessibilityLabel(selectedURL?.lastPathComponent)
+            viewButton.title = isFolder ? "Open Folder" : "View"
+            viewButton.setAccessibilityLabel(isFolder ? "Open folder" : "View image")
             caption.stringValue = selectedURL?.lastPathComponent ?? ""
             exposure.stringValue = ""
         }
-        posterRating.setRating(entries.first(where: { $0.url == selectedURL })?.rating)
-        let selection = entries.firstIndex(where: { $0.url == selectedURL }).map { IndexPath(item: $0, section: 0) }
-        let paths: Set<IndexPath> = selection.map { [$0] } ?? []
+        posterRating.setRating(selection.flatMap { entries[$0].image?.rating })
+        let paths: Set<IndexPath> = selection.map { [IndexPath(item: $0, section: 0)] } ?? []
         let selectionChanged = collection.selectionIndexPaths != paths
         if selectionChanged { collection.selectionIndexPaths = paths }
         needsLayout = true
@@ -291,7 +322,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         for item in collection.visibleItems() { (item as? GalleryItem)?.cancelThumbnail() }
     }
 
-    private func navigate(_ key: UInt16) {
+    func navigate(_ key: UInt16) {
         guard let index = entries.firstIndex(where: { $0.url == selectedURL }), !entries.isEmpty else { return }
         let next: Int?
         switch key {
@@ -323,7 +354,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         _ collectionView: NSCollectionView, willDisplay item: NSCollectionViewItem,
         forRepresentedObjectAt indexPath: IndexPath
     ) {
-        let url = entries[indexPath.item].url
+        guard let url = entries[indexPath.item].image?.url else { return }
         guard let access = fileAccess?.url == url ? fileAccess : folderAccess else { return }
         (item as? GalleryItem)?.presentation = presentation
         (item as? GalleryItem)?.loadThumbnail(loader: loader, access: access, generation: generation)
@@ -408,16 +439,17 @@ private final class GalleryItem: NSCollectionViewItem {
         imageView = preview
         textField = filename
     }
-    func configure(entry: ImageEntry, presentation: GalleryLayout) {
+    func configure(entry: GalleryEntry, presentation: GalleryLayout) {
         _ = view
         cancelThumbnail()
         url = entry.url
         self.presentation = presentation
-        preview.rating = entry.rating
+        preview.isFolder = entry.image == nil
+        preview.rating = entry.image?.rating
         preview.filename = entry.url.lastPathComponent
         filename.stringValue = preview.filename
-        let ratingDescription = entry.rating.flatMap { (1...5).contains($0) ? ", \($0) of 5 stars" : nil } ?? ""
-        preview.setAccessibilityLabel(preview.filename + ratingDescription)
+        let ratingDescription = entry.image?.rating.flatMap { (1...5).contains($0) ? ", \($0) of 5 stars" : nil } ?? ""
+        preview.setAccessibilityLabel(preview.filename + (preview.isFolder ? ", folder" : ratingDescription))
         view.toolTip = preview.filename
         preview.selected = isSelected
     }
@@ -453,6 +485,8 @@ private final class GalleryItem: NSCollectionViewItem {
 
 @MainActor
 final class GalleryThumbnailView: NSImageView {
+    private let folderIcon = NSImage(named: NSImage.folderName)
+    var isFolder = false { didSet { needsDisplay = true } }
     var rating: Int? { didSet { needsDisplay = true } }
     var filename = "" { didSet { needsDisplay = true } }
     var failed = false { didSet { needsDisplay = true } }
@@ -504,12 +538,21 @@ final class GalleryThumbnailView: NSImageView {
         image?.draw(
             in: displayedImageRect, from: .zero, operation: .sourceOver,
             fraction: hovered && presentation == .rows ? 0.88 : 1, respectFlipped: true, hints: nil)
-        if failed || (presentation == .rows && (hovered || selected) && image != nil) {
-            let captionHeight: CGFloat = failed ? 42 : 32
+        let captionHeight: CGFloat = failed ? 42 : 32
+        if isFolder, let folderIcon {
+            // Center the icon above the always-visible name so small tiles do not overlap them.
+            let height = tile.height - captionHeight
+            let side = min(80, min(tile.width, height) * 0.7)
+            let top = isFlipped ? tile.minY : tile.minY + captionHeight
+            folderIcon.draw(
+                in: NSRect(x: tile.midX - side / 2, y: top + (height - side) / 2, width: side, height: side),
+                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        if isFolder || failed || (presentation == .rows && (hovered || selected) && image != nil) {
             let bottom = NSRect(
                 x: tile.minX, y: isFlipped ? tile.maxY - captionHeight : tile.minY, width: tile.width,
                 height: captionHeight)
-            if !failed {
+            if !failed && !isFolder {
                 NSGradient(starting: .black.withAlphaComponent(0.82), ending: .clear)?.draw(
                     in: bottom, angle: isFlipped ? -90 : 90)
             }
@@ -519,7 +562,7 @@ final class GalleryThumbnailView: NSImageView {
                 string: filename,
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 11, weight: .medium),
-                    .foregroundColor: failed ? Theme.textPrimary : NSColor.white,
+                    .foregroundColor: failed || isFolder ? Theme.textPrimary : NSColor.white,
                     .paragraphStyle: paragraph,
                 ])
             if failed {
