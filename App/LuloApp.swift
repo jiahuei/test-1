@@ -60,8 +60,8 @@ final class LuloApp: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         view.submenu?.addItem(withTitle: "Refresh", action: #selector(refreshImages), keyEquivalent: "r")
         view.submenu?.addItem(withTitle: "Toggle Gallery", action: #selector(toggleGallery), keyEquivalent: "g")
         view.submenu?.addItem(
-            withTitle: "Open Parent Folder", action: #selector(openParentFolder),
-            keyEquivalent: "\u{F700}")
+            withTitle: "Enclosing Folder", action: #selector(openParentFolder),
+            keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!))
         view.submenu?.addItem(withTitle: "Previous Image", action: #selector(previousImage), keyEquivalent: "[")
         view.submenu?.addItem(withTitle: "Next Image", action: #selector(nextImage), keyEquivalent: "]")
         view.submenu?.addItem(withTitle: "Toggle Metadata", action: #selector(toggleMetadata), keyEquivalent: "i")

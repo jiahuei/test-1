@@ -94,7 +94,6 @@ final class BreadcrumbView: NSView {
         up.target = self
         up.action = #selector(openParent)
         up.toolTip = "Open parent folder (⌘↑)"
-        up.setAccessibilityLabel("Open parent folder")
         up.widthAnchor.constraint(lessThanOrEqualToConstant: 110).isActive = true
         parent.font = .systemFont(ofSize: 13)
         parent.lineBreakMode = .byTruncatingTail
@@ -131,12 +130,15 @@ final class BreadcrumbView: NSView {
         let narrow = windowWidth < 1000
         folderWidth?.isActive = hasFolder && !gallery && file != nil
         symbol.isHidden = !hasFolder || gallery
-        up.isHidden = !gallery || (authorizedFolder?.pathComponents.count ?? 0) <= 1
-        up.title = narrow ? "" : authorizedFolder?.deletingLastPathComponent().lastPathComponent ?? ""
+        let parentURL = authorizedFolder.flatMap(FolderNavigation.parent(of:))
+        let parentName = parentURL?.lastPathComponent ?? ""
+        up.isHidden = !gallery || parentURL == nil
+        up.title = narrow ? "" : parentName
         up.imagePosition = narrow ? .imageOnly : .imageLeading
+        up.setAccessibilityLabel("Open parent folder, \(parentName)")
         parent.isHidden = !hasFolder || narrow || gallery
         parentSlash.isHidden = parent.isHidden && up.isHidden
-        parent.stringValue = authorizedFolder?.deletingLastPathComponent().lastPathComponent ?? ""
+        parent.stringValue = parentName
         folder.isHidden = !hasFolder || gallery
         folderLabel.isHidden = !hasFolder || !gallery
         folder.title = authorizedFolder?.lastPathComponent ?? ""

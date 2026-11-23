@@ -198,7 +198,7 @@ func galleryDiscoversImmediateFolders() throws {
     }
 }
 
-/// Ensures folder discovery skips RAW, subdirectories, and symbolic links but retains corrupt supported images.
+/// Ensures image discovery excludes RAW files, folders, and symbolic links but retains corrupt supported images.
 @Test
 func folderDiscoveryAndRecoverableErrors() throws {
     try withFolder { folder in

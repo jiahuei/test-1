@@ -2,18 +2,20 @@ import AppKit
 import LuloCore
 import LuloImaging
 
-private struct GalleryEntry: Equatable {
-    let url: URL
-    let image: ImageEntry?
+private enum GalleryEntry: Equatable {
+    case folder(URL)
+    case image(ImageEntry)
 
-    init(folder: URL) {
-        url = folder
-        image = nil
+    var url: URL {
+        switch self {
+        case .folder(let url): url
+        case .image(let image): image.url
+        }
     }
 
-    init(image: ImageEntry) {
-        url = image.url
-        self.image = image
+    var image: ImageEntry? {
+        if case .image(let image) = self { return image }
+        return nil
     }
 }
 
@@ -183,7 +185,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         generation: Int,
         preferences: Preferences, totalCount: Int, filterSummary: String
     ) {
-        let entries = folders.map(GalleryEntry.init(folder:)) + images.map(GalleryEntry.init(image:))
+        let entries = folders.map(GalleryEntry.folder) + images.map(GalleryEntry.image)
         self.folderAccess = folderAccess
         self.fileAccess = fileAccess
         let mode = preferences.galleryLayout
@@ -196,7 +198,8 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         collectionLayout.presentation = mode
         collectionLayout.targetSize = size
         collectionLayout.aspectRatios = entries.map { entry in
-            guard let size = entry.image?.pixelSize, size.height > 0 else { return 1.5 }
+            guard case .image(let image) = entry else { return 1 }
+            guard let size = image.pixelSize, size.height > 0 else { return 1.5 }
             return Double(size.width / size.height)
         }
         if changed || layoutChanged {
@@ -247,7 +250,7 @@ final class GalleryView: NSView, NSCollectionViewDataSource, NSCollectionViewDel
         if self.selectedURL != selectedURL || refreshed {
             self.selectedURL = selectedURL
             fullPreview = false
-            posterImage.image = isFolder ? Theme.symbol("folder.fill", size: 64) : nil
+            posterImage.image = isFolder ? NSImage(named: NSImage.folderName) : nil
             posterImage.setAccessibilityLabel(selectedURL?.lastPathComponent)
             viewButton.title = isFolder ? "Open Folder" : "View"
             viewButton.setAccessibilityLabel(isFolder ? "Open folder" : "View image")
@@ -478,7 +481,7 @@ private final class GalleryItem: NSCollectionViewItem {
 
 @MainActor
 final class GalleryThumbnailView: NSImageView {
-    private let folderIcon = Theme.symbol("folder.fill", size: 40)
+    private let folderIcon = NSImage(named: NSImage.folderName)
     var isFolder = false { didSet { needsDisplay = true } }
     var rating: Int? { didSet { needsDisplay = true } }
     var filename = "" { didSet { needsDisplay = true } }
@@ -531,15 +534,17 @@ final class GalleryThumbnailView: NSImageView {
         image?.draw(
             in: displayedImageRect, from: .zero, operation: .sourceOver,
             fraction: hovered && presentation == .rows ? 0.88 : 1, respectFlipped: true, hints: nil)
+        let captionHeight: CGFloat = failed ? 42 : 32
         if isFolder, let folderIcon {
-            let size = folderIcon.size
+            // Center the icon above the always-visible name so small tiles do not overlap them.
+            let height = tile.height - captionHeight
+            let side = min(80, min(tile.width, height) * 0.7)
+            let top = isFlipped ? tile.minY : tile.minY + captionHeight
             folderIcon.draw(
-                in: NSRect(
-                    x: tile.midX - size.width / 2, y: tile.midY - size.height / 2, width: size.width,
-                    height: size.height))
+                in: NSRect(x: tile.midX - side / 2, y: top + (height - side) / 2, width: side, height: side),
+                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         }
         if isFolder || failed || (presentation == .rows && (hovered || selected) && image != nil) {
-            let captionHeight: CGFloat = failed ? 42 : 32
             let bottom = NSRect(
                 x: tile.minX, y: isFlipped ? tile.maxY - captionHeight : tile.minY, width: tile.width,
                 height: captionHeight)

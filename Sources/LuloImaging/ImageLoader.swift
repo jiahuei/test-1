@@ -48,6 +48,12 @@ public enum ImageLoadError: LocalizedError {
     }
 }
 
+/// Immediate children of one folder. Folders stay independent of image filters and metadata.
+public struct FolderContents: Sendable {
+    public var images: [ImageEntry] = []
+    public var folders: [URL] = []
+}
+
 public enum ImageLoader {
     // Each decoded image is bounded to roughly 256 MiB for 8-bit RGBA pixels.
     // ImageStore separately bounds cached images; Image I/O uses additional working memory.
@@ -66,8 +72,6 @@ public enum ImageLoader {
         }
         throw ImageLoadError.unsupported
     }
-
-    public typealias FolderContents = (images: [ImageEntry], folders: [URL])
 
     public static func discover(in folder: URL, isCancelled: () -> Bool = { false }) throws -> [ImageEntry] {
         try discoverContents(in: folder, isCancelled: isCancelled).images
@@ -113,10 +117,11 @@ public enum ImageLoader {
         }
         // Also cover empty folders and a cancellation after the final skipped entry.
         try checkCancellation()
-        return (
-            images,
-            folders.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-        )
+        return FolderContents(
+            images: images,
+            folders: folders.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            })
     }
 
     public static func details(at url: URL) throws -> ImageDetails {

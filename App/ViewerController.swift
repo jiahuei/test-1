@@ -49,7 +49,7 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
     private var manualRefresh = false
     private var refreshingFolder = false
     private var refreshRequest = 0
-    typealias DiscoverContents = @Sendable (URL, @Sendable () -> Bool) throws -> ImageLoader.FolderContents
+    typealias DiscoverContents = @Sendable (URL, @Sendable () -> Bool) throws -> FolderContents
     typealias MoveToTrash = @Sendable (URL, FileAccess) async throws -> Void
     private let moveToTrash: MoveToTrash
     private var trashInProgress = false
@@ -68,9 +68,11 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
     private var openedURL: URL? { fileAccess?.url }
     private var folders: [URL] = []
     private var selectedFolder: URL?
+    // Discovery returns ascending names; folders follow the image sort direction but always precede images.
+    private var visibleFolders: [URL] { session.preferences.ascending ? folders : folders.reversed() }
     private var galleryFolderSelection: URL? {
         guard !folders.isEmpty else { return nil }
-        return selectedFolder ?? (session.selectedURL == nil ? folders.first : nil)
+        return selectedFolder ?? (session.selectedURL == nil ? visibleFolders.first : nil)
     }
     private let automaticallyRefresh: Bool
     private var changeMonitor: ImageChangeMonitor?
@@ -548,7 +550,8 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
             if self.folderPanel === panel { self.folderPanel = nil }
             self.updateStatus()
             guard self.session.generation == generation, response == .OK, let url = panel.url else { return }
-            guard url.standardizedFileURL == folder.standardizedFileURL else {
+            // Paths ignore the trailing slash that only some directory URLs carry.
+            guard url.standardizedFileURL.path == folder.standardizedFileURL.path else {
                 self.status.stringValue = "Choose the requested folder to enable navigation."
                 return
             }
@@ -575,15 +578,18 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
     }
 
     var canOpenParent: Bool {
-        galleryVisible && (folderAccess?.url.pathComponents.count ?? 0) > 1 && window?.attachedSheet == nil
+        guard let folderAccess, window?.attachedSheet == nil else { return false }
+        return !galleryVisible || FolderNavigation.parent(of: folderAccess.url) != nil
     }
 
+    /// Moves up one level: from an image to its folder's Gallery, or from a folder to its parent.
     @objc func openParentFolder() {
         guard canOpenParent, let folderAccess else { return }
-        if let parent = folderAccess.enclosingFolder {
+        if !galleryVisible {
+            setGalleryVisible(true)
+        } else if let parent = folderAccess.enclosingFolder {
             startSession(file: nil, folder: parent, navigating: true, returningFrom: folderAccess.url)
-        } else {
-            let parent = folderAccess.url.deletingLastPathComponent().standardizedFileURL
+        } else if let parent = FolderNavigation.parent(of: folderAccess.url) {
             requestFolder(parent, message: "Choose the parent folder to open it in Gallery.") { [weak self] access in
                 self?.startSession(file: nil, folder: access, navigating: true, returningFrom: folderAccess.url)
             }
@@ -672,6 +678,10 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
                             }
                         }
                         self.session.replaceEntries(contents.images)
+                        if self.galleryVisible, self.selectedFolder == nil, self.session.selectedURL == nil {
+                            // Store the default folder so a later refresh that adds an image keeps it selected.
+                            self.selectedFolder = self.visibleFolders.first
+                        }
                         if self.session.selectedURL != selected { self.loadSelection() }
                         self.updateStatus()
                         self.prefetchNeighbor()
@@ -808,7 +818,8 @@ final class ViewerController: NSWindowController, NSWindowDelegate {
         browse.setAccessibilityLabel(browseLabel)
         if galleryVisible, let folderAccess {
             gallery.update(
-                images: entries, folders: folders, selectedURL: galleryFolderSelection ?? session.selectedURL,
+                images: entries, folders: visibleFolders,
+                selectedURL: galleryFolderSelection ?? session.selectedURL,
                 folderAccess: folderAccess,
                 fileAccess: fileAccess, generation: thumbnailGeneration, preferences: session.preferences,
                 totalCount: session.entries.count, filterSummary: filterSummary.stringValue)
